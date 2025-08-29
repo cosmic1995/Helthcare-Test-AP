@@ -1,0 +1,347 @@
+version: '3.8'
+
+services:
+  # Frontend Application
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_AI_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_ALM_API_URL=http://localhost:8002
+      - NEXT_PUBLIC_ENVIRONMENT=development
+      - NEXT_PUBLIC_TEST_MODE=true
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - ingest-api
+      - ai-orchestrator
+      - alm-adapters
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Ingest API Service
+  ingest-api:
+    build:
+      context: ./services/ingest-api
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - GOOGLE_CLOUD_PROJECT=healthcare-compliance-dev
+      - DATABASE_URL=bigquery://healthcare-compliance-dev/healthcare_compliance_dev
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./services/ingest-api:/app
+      - ./shared:/app/shared
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # AI Orchestrator Service
+  ai-orchestrator:
+    build:
+      context: ./services/ai-orchestrator
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8001:8001"
+    environment:
+      - ENVIRONMENT=development
+      - GOOGLE_CLOUD_PROJECT=healthcare-compliance-dev
+      - VERTEX_AI_REGION=us-central1
+      - GEMINI_MODEL=gemini-1.5-pro
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./services/ai-orchestrator:/app
+      - ./shared:/app/shared
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ALM Adapters Service
+  alm-adapters:
+    build:
+      context: ./services/alm-adapters
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8002:8002"
+    environment:
+      - ENVIRONMENT=development
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=DEBUG
+      # ALM Configuration (use environment variables for secrets)
+      - JIRA_BASE_URL=${JIRA_BASE_URL:-https://demo.atlassian.net}
+      - AZURE_DEVOPS_ORG=${AZURE_DEVOPS_ORG:-demo-org}
+      - POLARION_BASE_URL=${POLARION_BASE_URL:-https://demo.polarion.com}
+    volumes:
+      - ./services/alm-adapters:/app
+      - ./shared:/app/shared
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-healthcare-dev-password}
+
+  # PostgreSQL for local development (BigQuery alternative)
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=healthcare_compliance_dev
+      - POSTGRES_USER=healthcare_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-healthcare-dev-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/database/local-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthcare_user -d healthcare_compliance_dev"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MinIO for local S3-compatible storage (GCS alternative)
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=healthcare-admin
+      - MINIO_ROOT_PASSWORD=${MINIO_PASSWORD:-healthcare-dev-password-123}
+    volumes:
+      - minio_data:/data
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Elasticsearch for search and analytics (local development)
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Kibana for log visualization
+  kibana:
+    image: kibana:8.11.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5601/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-healthcare-admin}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./infra/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+
+  # NGINX reverse proxy for local development
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./infra/nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - web
+      - ingest-api
+      - ai-orchestrator
+      - alm-adapters
+    networks:
+      - healthcare-compliance
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  minio_data:
+    driver: local
+  elasticsearch_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  healthcare-compliance:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Development utilities
+x-development-services:
+  # Database migration service
+  migrate:
+    build:
+      context: ./infra/database
+      dockerfile: Dockerfile.migrate
+    environment:
+      - DATABASE_URL=postgresql://healthcare_user:${POSTGRES_PASSWORD:-healthcare-dev-password}@postgres:5432/healthcare_compliance_dev
+    depends_on:
+      - postgres
+    networks:
+      - healthcare-compliance
+    profiles:
+      - tools
+
+  # Test runner service
+  test-runner:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.test
+    environment:
+      - NODE_ENV=test
+      - CI=true
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    networks:
+      - healthcare-compliance
+    profiles:
+      - testing
+
+  # Load testing service
+  load-test:
+    image: loadimpact/k6:latest
+    volumes:
+      - ./tests/load:/scripts
+    networks:
+      - healthcare-compliance
+    profiles:
+      - load-testing
+    command: run /scripts/healthcare-compliance-load-test.js

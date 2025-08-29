@@ -1,0 +1,810 @@
+openapi: 3.1.0
+info:
+  title: Healthcare Compliance SaaS API
+  version: 1.0.0
+  description: Production-ready API for regulated healthcare compliance management
+  contact:
+    name: API Support
+    email: support@healthcare-compliance.com
+  license:
+    name: Proprietary
+    
+servers:
+  - url: https://api.healthcare-compliance.com/v1
+    description: Production server
+  - url: https://staging-api.healthcare-compliance.com/v1
+    description: Staging server
+
+security:
+  - BearerAuth: []
+
+paths:
+  # File Upload & Ingestion
+  /ingest/upload:
+    post:
+      summary: Request signed URL for file upload
+      operationId: requestUpload
+      tags: [Ingestion]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRequest'
+            example:
+              filename: "requirements_spec_v1.pdf"
+              content_type: "application/pdf"
+              size: 2048576
+              project_id: "proj_123"
+      responses:
+        '200':
+          description: Signed URL for upload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /ingest/commit:
+    post:
+      summary: Finalize upload and trigger processing
+      operationId: commitUpload
+      tags: [Ingestion]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                upload_id:
+                  type: string
+                project_id:
+                  type: string
+                enable_dlp:
+                  type: boolean
+                  default: true
+              required: [upload_id, project_id]
+      responses:
+        '202':
+          description: Processing initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+                    enum: [queued, processing]
+
+  # AI Generation
+  /ai/generate:
+    post:
+      summary: Generate test cases from requirements
+      operationId: generateTests
+      tags: [AI]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerationRequest'
+      responses:
+        '202':
+          description: Generation job started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+
+  /ai/jobs/{job_id}:
+    get:
+      summary: Get generation job status
+      operationId: getJobStatus
+      tags: [AI]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+
+  # Requirements
+  /requirements:
+    get:
+      summary: List requirements
+      operationId: listRequirements
+      tags: [Requirements]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: std_tags
+          in: query
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ComplianceStandard'
+        - name: risk_class
+          in: query
+          schema:
+            $ref: '#/components/schemas/RiskClass'
+      responses:
+        '200':
+          description: List of requirements
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Requirement'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /requirements/{req_id}:
+    get:
+      summary: Get requirement by ID
+      operationId: getRequirement
+      tags: [Requirements]
+      parameters:
+        - name: req_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Requirement details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Requirement'
+
+  # Tests
+  /tests:
+    get:
+      summary: List test cases
+      operationId: listTests
+      tags: [Tests]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: review_status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, needs_revision]
+        - name: req_id
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of test cases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Test'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+
+  /tests/{test_id}:
+    get:
+      summary: Get test case by ID
+      operationId: getTest
+      tags: [Tests]
+      parameters:
+        - name: test_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Test case details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Test'
+
+    put:
+      summary: Update test case
+      operationId: updateTest
+      tags: [Tests]
+      parameters:
+        - name: test_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                gherkin:
+                  type: string
+                steps:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/TestStep'
+                expected_summary:
+                  type: string
+      responses:
+        '200':
+          description: Updated test case
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Test'
+
+  /tests/{test_id}/approve:
+    post:
+      summary: Approve test case with e-signature
+      operationId: approveTest
+      tags: [Tests]
+      parameters:
+        - name: test_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                attestation:
+                  type: string
+                  description: "I approve this test case and attest to its accuracy"
+                password:
+                  type: string
+                  description: "User password for re-authentication"
+              required: [attestation, password]
+      responses:
+        '200':
+          description: Test approved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signature:
+                    $ref: '#/components/schemas/ESignature'
+                  test:
+                    $ref: '#/components/schemas/Test'
+
+  # RTM (Requirements Traceability Matrix)
+  /rtm:
+    get:
+      summary: Get Requirements Traceability Matrix
+      operationId: getRTM
+      tags: [RTM]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        '200':
+          description: RTM data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RTMEntry'
+                  coverage_stats:
+                    type: object
+                    properties:
+                      total_requirements:
+                        type: integer
+                      covered_requirements:
+                        type: integer
+                      coverage_percentage:
+                        type: number
+            text/csv:
+              schema:
+                type: string
+
+  # ALM Integrations
+  /integrations/{system}/push:
+    post:
+      summary: Push tests to ALM system
+      operationId: pushToALM
+      tags: [Integrations]
+      parameters:
+        - name: system
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ALMSystem'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                test_ids:
+                  type: array
+                  items:
+                    type: string
+                project_key:
+                  type: string
+                  description: "ALM project identifier"
+              required: [test_ids, project_key]
+      responses:
+        '202':
+          description: Push job initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job_id:
+                    type: string
+                  status:
+                    type: string
+
+  /integrations/status:
+    get:
+      summary: Get ALM integration status
+      operationId: getIntegrationStatus
+      tags: [Integrations]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Integration status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  systems:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        system:
+                          $ref: '#/components/schemas/ALMSystem'
+                        connected:
+                          type: boolean
+                        last_sync:
+                          type: string
+                          format: date-time
+                        sync_count:
+                          type: integer
+
+  # Reports
+  /reports/rtm:
+    get:
+      summary: Export RTM report
+      operationId: exportRTM
+      tags: [Reports]
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [csv, pdf]
+      responses:
+        '200':
+          description: RTM export
+          content:
+            text/csv:
+              schema:
+                type: string
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+
+  # Change Impact Analysis
+  /delta/reanalyze:
+    post:
+      summary: Analyze change impact
+      operationId: analyzeChangeImpact
+      tags: [Analysis]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                req_ids:
+                  type: array
+                  items:
+                    type: string
+                  description: "Requirements that have changed"
+              required: [req_ids]
+      responses:
+        '200':
+          description: Impact analysis results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  impacted_tests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        test_id:
+                          type: string
+                        impact_score:
+                          type: number
+                        recommended_action:
+                          type: string
+                          enum: [regenerate, review, no_action]
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ProjectId:
+      name: project_id
+      in: query
+      required: true
+      schema:
+        type: string
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ComplianceStandard:
+      type: string
+      enum: [ISO_13485, IEC_62304, FDA_QMSR, ISO_27001, CFR_PART_11, GDPR, HIPAA]
+
+    RiskClass:
+      type: string
+      enum: [A, B, C, D]
+
+    ALMSystem:
+      type: string
+      enum: [jira, ado, polarion]
+
+    TestStep:
+      type: object
+      properties:
+        action:
+          type: string
+        expected:
+          type: string
+      required: [action, expected]
+
+    Requirement:
+      type: object
+      properties:
+        req_id:
+          type: string
+        project_id:
+          type: string
+        source_uri:
+          type: string
+        section_path:
+          type: string
+        text:
+          type: string
+        normative:
+          type: boolean
+        risk_class:
+          $ref: '#/components/schemas/RiskClass'
+        std_tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceStandard'
+        ingest_hash:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [req_id, project_id, text, normative, risk_class]
+
+    Test:
+      type: object
+      properties:
+        test_id:
+          type: string
+        req_id:
+          type: string
+        project_id:
+          type: string
+        title:
+          type: string
+        gherkin:
+          type: string
+        preconditions:
+          type: array
+          items:
+            type: string
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TestStep'
+        expected_summary:
+          type: string
+        risk_refs:
+          type: array
+          items:
+            type: string
+        std_tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceStandard'
+        generated_by_model:
+          type: string
+        quality_score:
+          type: number
+          minimum: 0
+          maximum: 1
+        review_status:
+          type: string
+          enum: [pending, approved, rejected, needs_revision]
+        reviewer:
+          type: string
+        reviewed_at:
+          type: string
+          format: date-time
+        signature_evidence:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [test_id, req_id, project_id, title, gherkin]
+
+    RTMEntry:
+      type: object
+      properties:
+        req_id:
+          type: string
+        requirement_text:
+          type: string
+          maxLength: 200
+        risk_class:
+          $ref: '#/components/schemas/RiskClass'
+        std_tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/ComplianceStandard'
+        linked_tests:
+          type: array
+          items:
+            type: object
+            properties:
+              test_id:
+                type: string
+              title:
+                type: string
+              status:
+                type: string
+              link_type:
+                type: string
+        coverage_score:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    ESignature:
+      type: object
+      properties:
+        user_id:
+          type: string
+        entity_id:
+          type: string
+        entity_type:
+          type: string
+          enum: [test, requirement]
+        action:
+          type: string
+          enum: [approve, reject]
+        attestation:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        ip_address:
+          type: string
+        user_agent:
+          type: string
+        signature_hash:
+          type: string
+      required: [user_id, entity_id, entity_type, action, attestation]
+
+    UploadRequest:
+      type: object
+      properties:
+        filename:
+          type: string
+        content_type:
+          type: string
+        size:
+          type: integer
+        project_id:
+          type: string
+      required: [filename, content_type, size, project_id]
+
+    UploadResponse:
+      type: object
+      properties:
+        upload_id:
+          type: string
+        signed_url:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      required: [upload_id, signed_url, expires_at]
+
+    GenerationRequest:
+      type: object
+      properties:
+        project_id:
+          type: string
+        req_ids:
+          type: array
+          items:
+            type: string
+        batch_size:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        model_config:
+          type: object
+          properties:
+            temperature:
+              type: number
+              minimum: 0
+              maximum: 2
+              default: 0.1
+            max_tokens:
+              type: integer
+              minimum: 100
+              maximum: 4000
+              default: 2000
+      required: [project_id]
+
+    GenerationResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Test'
+        error:
+          type: string
+      required: [job_id, status, progress]
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          minimum: 1
+          default: 1
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        total:
+          type: integer
+        has_more:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: string
+        trace_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+      required: [error, message, code, trace_id, timestamp]
